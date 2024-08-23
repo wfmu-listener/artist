@@ -4,13 +4,19 @@ import time
 from bs4 import BeautifulSoup as bs
 import sqlite3
 
+### FIXME:  go-gos VACATION 2023-11-20
+# GBV no play link 2019-10-11
+# Kate Bush no play link 2024-01-12
+# 2024-01-01 No AOTW, don't let Nick Lowe fill in for Low!
+# 2022-08-01 no title
+
 base = 'https://www.wfmu.org'
 db = sqlite3.connect('/home/cgw/Hack/AOTW/shows.sqlite')
 
 def create_shows_table():
     cur = db.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS shows(date, show_num)""")
-    for year in range(2017, 2024):
+    cur.execute("""CREATE TABLE IF NOT EXISTS shows(date, show_num INT, UNIQUE(date))""")
+    for year in range(2017, 2025):
         rep = requests.get(base + '/playlists/WA%s' % year)
         s = bs(rep.content, 'html.parser')
         div = s.find('div', class_='showlist')
@@ -20,7 +26,15 @@ def create_shows_table():
             date = time.strftime('%Y-%m-%d', td)
             url = li.find_all('a', href=True)[1]['href'] # skip ★
             show_num = url.split('/')[-1]
+            sql = """SELECT * from shows where date="%s" """ % date
+            res = cur.execute(sql)
+            r = res.fetchone()
+            if r:
+                print("HAVE", date, show_num)
+                continue
             print(date, show_num)
+
+
             cur.execute("""INSERT INTO shows VALUES("%s",%s)""" %
                         (date, show_num))
     db.commit()
@@ -28,10 +42,17 @@ def create_shows_table():
 
 def create_archive_table():
     cur = db.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS archive(show_num, archive, UNIQUE(show_num))""")
+    cur.execute("""CREATE TABLE IF NOT EXISTS archive(show_num INT, archive INT, UNIQUE(show_num))""")
     res = cur.execute("""SELECT show_num FROM shows""")
     for r in res.fetchall():
         show_num = r[0]
+        sql = """SELECT * from archive where show_num=%s""" % show_num
+        res = cur.execute(sql)
+        r = res.fetchone()
+        if r:
+            print("HAVE", show_num)
+            continue
+        print("GET", show_num)
         url = '/playlists/shows/%s' % show_num
         rep = requests.get(base + url)
         s = bs(rep.content, 'html.parser')
@@ -42,7 +63,6 @@ def create_archive_table():
                 tok = href.split('&')
                 archive = tok[2].split('=')[1]
                 sql = """INSERT INTO archive VALUES (%s,%s)""" % (show_num, archive)
-                print(sql)
                 cur.execute(sql)
                 break
     db.commit()
@@ -68,7 +88,9 @@ def create_tracks_table():
         print(show_num)
         res = cur.execute("""SELECT * FROM tracks WHERE show_num=%s""" % show_num)
         if res.fetchone():
+            print("HAVE", show_num)
             continue
+        print("GET",show_num)
         url = '/playlists/shows/%s' % show_num
         rep = requests.get(base + url)
         s = bs(rep.content, 'html.parser')
@@ -98,14 +120,15 @@ def create_tracks_table():
 def find_aotw():
     cur = db.cursor()
     res = cur.execute("""SELECT * FROM shows ORDER BY date""")
-    monday = None
+    monday = last_monday = None
     shows = []
     def do_week():
-        #print("Shows:", shows)
+        print("Shows:", shows)
         sql = ("""SELECT DISTINCT artist FROM tracks
         WHERE show_num IN (%s)
         AND comment LIKE '%%artist of the week%%'""" %
                str(shows)[1:-1])
+        print(sql)
         res = cur.execute(sql)
         artists = res.fetchall()
         if artists:
@@ -138,21 +161,33 @@ def find_aotw():
         return list(res)
 
 
+    skip_week = False
     for (date, show_num) in res.fetchall():
         if date < '2018-12-03':
             continue
+        print("DATE", date, "SHOW", show_num)
         td = time.strptime(date, '%Y-%m-%d')
+        if td.tm_wday != 0 and skip_week:
+            continue
         if td.tm_wday == 0:
+            print("IS MONDAY")
+            if skip_week:
+                skip_week = False
+
             if shows:
                 res = cur.execute("""SELECT * FROM aotw WHERE week='%s'"""%
                                   monday)
                 r= res.fetchall()
                 if r:
+                    print("HAVE AOTW", r)
+                    last_monday = monday
                     monday = date
+                    print("CLOBBER LIST 1", shows, monday)
                     shows = []
-                    print(r)
+                    skip_week = True
                     continue
                 res = do_week()
+                print("RES", res, date)
                 if len(res) == 1:
                     cur.execute("""INSERT INTO aotw VALUES("%s", "%s")""" %
                                 (monday, res[0]))
@@ -171,14 +206,19 @@ def find_aotw():
                     if res:
                         cur.execute("""INSERT INTO aotw VALUES("%s", "%s")""" %
                                     (monday, res))
-
+            last_monday = monday
             monday = date
+            print("CLOBBER LIST 2", shows, monday)
             shows = []
+
+        print("APPEND", show_num)
         shows.append(show_num)
+        print("Show list", shows)
         db.commit()
 
     if shows:
         res = do_week()
+        print(monday, res)
         cur.execute("""INSERT INTO aotw VALUES("%s", "%s")""" %
                     (monday, res[0]))
 
@@ -253,6 +293,19 @@ def find_tracks(artist, show_num):
         candidates = ['björk', 'sugarcubes']
     if 'ronettes' in lower:
         candidates = ['ronettes', 'ronnettes']
+    if 'go gos' in lower:
+        candidates = ['go gos', 'go-gos', "go go's"]
+    if 'iggy pop' in lower:
+        candidates = ['iggy pop', 'the stooges']
+    if 'jamila woods'  in lower:
+        candidates = ['jamila woods', 'Bonobo feat: Jamila Woods',
+                      "jamila woods (feat. nico segal)"]
+    if 'bonzo' in lower:
+        candidates = ['bonzo dog band', 'bonzo dog doo dah band',
+                      'bonzo dog doo-dah band']
+    if 'dream syndicat' in lower:
+        candidates = ['dream syndicate', 'psychic temple & the dream syndicate']
+
     for c in candidates:
         res = cur.execute("""SELECT * FROM tracks WHERE artist like '%%%s%%'
         AND show_num = %s""" %
@@ -260,6 +313,11 @@ def find_tracks(artist, show_num):
 
         r = res.fetchall()
         if r:
+            if artist.lower()=='low' and r[0][1].lower=='nick lowe':
+                if len(r) > 1:
+                    return r[1]
+                else:
+                    continue
             return r[0]
     # Sometimes title and artist are swapped
     for c in candidates:
@@ -292,7 +350,8 @@ def find_aotw_plays():
         res = cur.execute("""SELECT artist FROM aotw WHERE week='%s'""" %
                           week)
         artist = res.fetchone()[0]
-
+        if artist.startswith("Jamila Woods"):
+            artist = "Jamila Woods"
         print("""      <tr>""")
         print("""        <td align="center" colspan=3>""")
         print("""          <font size=+1>""")
@@ -345,4 +404,6 @@ def find_aotw_plays():
     print("""</html>""")
 
 if __name__ == '__main__':
+    pass
+    #find_aotw()
     find_aotw_plays()
