@@ -1,7 +1,6 @@
 #!/usr/bin/env python
-import requests
+
 import time
-from bs4 import BeautifulSoup as bs
 import sqlite3
 
 ### FIXME:  go-gos VACATION 2023-11-20
@@ -11,61 +10,8 @@ import sqlite3
 # 2022-08-01 no title
 
 base = 'https://www.wfmu.org'
-db = sqlite3.connect('/home/cgw/Hack/AOTW/shows.sqlite')
+db = sqlite3.connect('/home/cgw/WFMU/shows.sqlite')
 
-def create_shows_table():
-    cur = db.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS shows(date, show_num INT, UNIQUE(date))""")
-    for year in range(2017, 2025):
-        rep = requests.get(base + '/playlists/WA%s' % year)
-        s = bs(rep.content, 'html.parser')
-        div = s.find('div', class_='showlist')
-        for li in reversed(div.find_all('li')):
-            date = li.text.strip().split(':')[0]
-            td = time.strptime(date, '%B %d, %Y')
-            date = time.strftime('%Y-%m-%d', td)
-            url = li.find_all('a', href=True)[1]['href'] # skip ★
-            show_num = url.split('/')[-1]
-            sql = """SELECT * from shows where date="%s" """ % date
-            res = cur.execute(sql)
-            r = res.fetchone()
-            if r:
-                print("HAVE", date, show_num)
-                continue
-            print(date, show_num)
-
-
-            cur.execute("""INSERT INTO shows VALUES("%s",%s)""" %
-                        (date, show_num))
-    db.commit()
-
-
-def create_archive_table():
-    cur = db.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS archive(show_num INT, archive INT, UNIQUE(show_num))""")
-    res = cur.execute("""SELECT show_num FROM shows""")
-    for r in res.fetchall():
-        show_num = r[0]
-        sql = """SELECT * from archive where show_num=%s""" % show_num
-        res = cur.execute(sql)
-        r = res.fetchone()
-        if r:
-            print("HAVE", show_num)
-            continue
-        print("GET", show_num)
-        url = '/playlists/shows/%s' % show_num
-        rep = requests.get(base + url)
-        s = bs(rep.content, 'html.parser')
-        tab = s.find(id='drop_table')
-        for a in tab.find_all('a', href=True):
-            href = a['href']
-            if 'flashplayer' in href:
-                tok = href.split('&')
-                archive = tok[2].split('=')[1]
-                sql = """INSERT INTO archive VALUES (%s,%s)""" % (show_num, archive)
-                cur.execute(sql)
-                break
-    db.commit()
 
 def make_play_link(show_num, start_time):
     cur = db.cursor()
@@ -78,40 +24,6 @@ def make_play_link(show_num, start_time):
         show_num, archive, start_time))
 
 
-def create_tracks_table():
-    cur = db.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS tracks(show_num,artist,title,comment,time)""")
-
-    res = cur.execute("""SELECT show_num FROM shows ORDER BY show_num""")
-    for show_num in res.fetchall():
-        show_num = show_num[0]
-        print(show_num)
-        res = cur.execute("""SELECT * FROM tracks WHERE show_num=%s""" % show_num)
-        if res.fetchone():
-            print("HAVE", show_num)
-            continue
-        print("GET",show_num)
-        url = '/playlists/shows/%s' % show_num
-        rep = requests.get(base + url)
-        s = bs(rep.content, 'html.parser')
-        tab = s.find(id='drop_table')
-        for row in tab.find_all('tr'):
-            def get(name):
-                x = row.find('td', class_='col_'+name)
-                return x.text.strip().replace('"','""') if x else ''
-            comment = get('comments')
-            artist = get('artist')
-            title = get('song_title')
-            if title:
-                title = title.split('→')[0].strip()
-            time = get('live_timestamps_flag')
-            if time:
-                time = time.split()[0].strip()
-            print(comment, artist, title, comment, time)
-            sql = ("""INSERT INTO tracks VALUES (%s,"%s","%s","%s","%s")""" %
-                   (show_num,artist,title,comment,time))
-            print(sql)
-            cur.execute(sql)
 
 
     db.commit()
@@ -228,6 +140,7 @@ def find_aotw():
 def find_tracks(artist, show_num):
     cur = db.cursor()
     lower = artist.lower()
+    lower = lower.removeprefix("artist of the week:").strip()
     if lower.startswith("the"):
         artist = artist[4:].strip()
         lower = artist.lower()
@@ -305,7 +218,14 @@ def find_tracks(artist, show_num):
                       'bonzo dog doo-dah band']
     if 'dream syndicat' in lower:
         candidates = ['dream syndicate', 'psychic temple & the dream syndicate']
-
+    if 'buzzcocks' in lower:
+        candidates = ['buzzcocks', 'pete shelley']
+    if 'spiritualized' in lower:
+        candidates = ['spiritualized', 'spacemen 3']
+    if 'roky erickson' in lower:
+        candidates = ['roky erickson', '13th floor elevators']
+    if 'adam and the ants' in lower:
+        candidates = ['adam ant', 'adam and the ants']
     for c in candidates:
         res = cur.execute("""SELECT * FROM tracks WHERE artist like '%%%s%%'
         AND show_num = %s""" %
@@ -313,7 +233,13 @@ def find_tracks(artist, show_num):
 
         r = res.fetchall()
         if r:
-            if artist.lower()=='low' and r[0][1].lower=='nick lowe':
+            if not r[0][2].strip(): # Empty title
+                if len(r) > 1:
+                    return r[1]
+                else:
+                    continue
+
+            if artist.lower()=='low' and r[0][1].lower() =='nick lowe':
                 if len(r) > 1:
                     return r[1]
                 else:
@@ -403,7 +329,6 @@ def find_aotw_plays():
     print("""  </body>""")
     print("""</html>""")
 
-if __name__ == '__main__':
-    pass
-    #find_aotw()
+if __name__ == "__main__":
+    find_aotw()
     find_aotw_plays()
